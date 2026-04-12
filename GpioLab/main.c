@@ -3,7 +3,7 @@
  * rev 1.0 12-Feb-2026 skegm
  * GpioLab (Week 3)
  *
- * Controls 3 LEDs using GPIO.
+ * Controls 3 LEDs, or RGB using GPIO.
  * Receives commands from the serial terminal:
  *   r/R = toggle red LED
  *   g/G = toggle green LED
@@ -16,7 +16,7 @@
 #include <stdbool.h>     // bool, true, false (C99+)
 #include <stdio.h>       // printf, getchar_timeout_us
 
-// GPIO pin numbers — UPDATE THESE to match your wiring
+// GPIO pin numbers 
 #define RED_LED   11
 #define GREEN_LED 12
 #define BLUE_LED  13

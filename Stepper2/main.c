@@ -1,12 +1,14 @@
 /**************************************************************
  * main.c
- * CC2511 Lab 5 - Advanced control using text commands
+ * CC2511 Lab 5 - Stepper2
+ * Advanced control using text commands
  *
  * This program:
- * 1. Collects text commands from the terminal into a buffer
- * 2. Handles backspace and Enter correctly
- * 3. Parses complete commands
- * 4. Controls a stepper motor through a DRV8825 driver
+ * 1. Reads terminal input into a text buffer
+ * 2. Handles Enter and backspace correctly
+ * 3. Detects when a full command has been entered
+ * 4. Parses and validates commands
+ * 5. Controls a DRV8825 stepper motor driver
  *
  * Supported commands:
  *   fwd <steps>
@@ -14,53 +16,79 @@
  *   delay high <time_us>
  *   delay low <time_us>
  *   mode <1|2|4|8|16|32>
- * ***********************************************************/
+ *
+ * Design idea:
+ * - process_input() only deals with collecting characters
+ * - process_command() only deals with parsing/executing commands
+ * - main() repeatedly checks for input, then processes full commands
+ ***************************************************************/
 
-#include "pico/stdlib.h"
-#include <stdbool.h>
-#include <stdio.h>
-#include <string.h>
+#include "pico/stdlib.h"   // Pico GPIO, timing, stdio support
+#include <stdbool.h>       // bool, true, false
+#include <stdio.h>         // printf, snprintf, sscanf, putchar
+#include <string.h>        // strcmp
+#include <ctype.h>         // isalnum
 
-#define BUFFER_SIZE 32          // change only this to safely resize the buffer
+/* Size of terminal command buffer.
+ * Change only this value if you want a larger/smaller buffer. */
+#define BUFFER_SIZE 32
 
-volatile char command_buffer[BUFFER_SIZE];  // stores typed command
-volatile unsigned int buffer_index = 0;    // next empty slot in buffer
-volatile bool flag_complete = false;       // true when Enter finishes a command
+/* -------- Command buffer state --------
+ * command_buffer = stores typed characters
+ * buffer_index   = next empty slot in the buffer
+ * flag_complete  = true once Enter has been pressed
+ *
+ * buffer_index is the NEXT free position, not the last used one.
+ * Example:
+ *   "abc"
+ *    012
+ * buffer_index will be 3
+ */
+char command_buffer[BUFFER_SIZE];
+unsigned int buffer_index = 0;
+bool flag_complete = false;
 
-// DRV8825 control pins
+/* -------- DRV8825 control pins --------
+ * Update these if your wiring is different. */
 #define STEP_PIN 14
 #define DIR_PIN  15
 #define M0_PIN   18
 #define M1_PIN   19
 #define M2_PIN   20
 
-int high_delay    = 1000;   // STEP high time in us
-int low_delay     = 1000;   // STEP low time in us
-int microstepping = 1;      // current microstep mode
+/* -------- Step pulse timing --------
+ * high_delay = STEP high time in microseconds
+ * low_delay  = STEP low time in microseconds
+ *
+ * Start with safe/slower values, then tune using commands.
+ */
+int high_delay = 1000;
+int low_delay  = 1000;
 
-/*
-Start with high_delay = 1000, low_delay = 1000 — motor works but slowly
-Send "delay high 2" via terminal → now high is correct
-Send "delay low 500" → test if motor still works
-Keep lowering low_delay until steps start missing, then back off
-*/
+/* Stores current microstepping mode.
+ * Not essential for movement, but useful to track current state. */
+int microstepping = 1;
 
-// Set up all GPIO pins used by the driver
+/* ============================================================
+ * Initialise all GPIO pins used by the stepper motor driver
+ * ============================================================ */
 void init_pins(void)
 {
+    /* Prepare the GPIO pins */
     gpio_init(STEP_PIN);
     gpio_init(DIR_PIN);
     gpio_init(M0_PIN);
     gpio_init(M1_PIN);
     gpio_init(M2_PIN);
 
+    /* Set all of them as outputs */
     gpio_set_dir(STEP_PIN, GPIO_OUT);
     gpio_set_dir(DIR_PIN,  GPIO_OUT);
     gpio_set_dir(M0_PIN,   GPIO_OUT);
     gpio_set_dir(M1_PIN,   GPIO_OUT);
     gpio_set_dir(M2_PIN,   GPIO_OUT);
 
-    // Start with all outputs low
+    /* Start with outputs low */
     gpio_put(STEP_PIN, 0);
     gpio_put(DIR_PIN,  0);
     gpio_put(M0_PIN,   0);
@@ -68,163 +96,307 @@ void init_pins(void)
     gpio_put(M2_PIN,   0);
 }
 
-// Send one STEP pulse (used by step_motor)
+/* ============================================================
+ * Send one pulse to the STEP pin
+ * ============================================================
+ * DRV8825 advances one microstep/full-step on a STEP pulse.
+ * Pulse shape:
+ *   STEP high for high_delay microseconds
+ *   STEP low  for low_delay  microseconds
+ */
 void send_one_pulse(void)
 {
-    gpio_put(STEP_PIN, 1);      // pulse high
-    sleep_us(high_delay);
-    gpio_put(STEP_PIN, 0);      // pulse low
-    sleep_us(low_delay);
+    gpio_put(STEP_PIN, 1);     // set STEP high
+    sleep_us(high_delay);      // hold it high
+    gpio_put(STEP_PIN, 0);     // set STEP low
+    sleep_us(low_delay);       // hold it low
 }
 
-// Step the motor once in the specified direction
+/* ============================================================
+ * Step motor once in chosen direction
+ * ============================================================
+ * fwd = true  -> forward
+ * fwd = false -> reverse
+ *
+ * DIR should be stable before STEP pulse is sent.
+ */
 void step_motor(bool fwd)
 {
-    gpio_put(DIR_PIN, fwd);     // set direction
-    sleep_us(10);               // let DIR settle before stepping
-    send_one_pulse();
+    gpio_put(DIR_PIN, fwd);    // set direction pin
+    sleep_us(10);              // small settle time for DIR
+    send_one_pulse();          // send one step pulse
 }
 
-// Set MODE pins for DRV8825 microstepping
-// MODE2:MODE1:MODE0 encodes n where STEP = 2^n
+/* ============================================================
+ * Move motor by multiple steps
+ * ============================================================
+ * Repeats single-step function 'steps' times.
+ */
+void move_n_steps(int steps, bool fwd)
+{
+    for (int i = 0; i < steps; i++)
+    {
+        step_motor(fwd);
+    }
+}
+
+/* ============================================================
+ * Set DRV8825 microstepping mode
+ * ============================================================
+ * MODE2:MODE1:MODE0 encodes:
+ *   000 = 1
+ *   001 = 2
+ *   010 = 4
+ *   011 = 8
+ *   100 = 16
+ *   101 = 32
+ *
+ * Invalid values are ignored here; parser should reject them first.
+ */
 void set_microstepping(int microsteps)
 {
     switch (microsteps)
     {
-    case 1:   gpio_put(M0_PIN, 0); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 0); break; // 000
-    case 2:   gpio_put(M0_PIN, 1); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 0); break; // 001
-    case 4:   gpio_put(M0_PIN, 0); gpio_put(M1_PIN, 1); gpio_put(M2_PIN, 0); break; // 010
-    case 8:   gpio_put(M0_PIN, 1); gpio_put(M1_PIN, 1); gpio_put(M2_PIN, 0); break; // 011
-    case 16:  gpio_put(M0_PIN, 0); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 1); break; // 100
-    case 32:  gpio_put(M0_PIN, 1); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 1); break; // 101
-    default:  return;   // ignore invalid values
+    case 1:
+        gpio_put(M0_PIN, 0); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 0);
+        break;
+    case 2:
+        gpio_put(M0_PIN, 1); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 0);
+        break;
+    case 4:
+        gpio_put(M0_PIN, 0); gpio_put(M1_PIN, 1); gpio_put(M2_PIN, 0);
+        break;
+    case 8:
+        gpio_put(M0_PIN, 1); gpio_put(M1_PIN, 1); gpio_put(M2_PIN, 0);
+        break;
+    case 16:
+        gpio_put(M0_PIN, 0); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 1);
+        break;
+    case 32:
+        gpio_put(M0_PIN, 1); gpio_put(M1_PIN, 0); gpio_put(M2_PIN, 1);
+        break;
+    default:
+        return;   // do nothing for invalid values
     }
 
-    microstepping = microsteps;
-    sleep_us(10);               // let MODE pins settle
+    microstepping = microsteps;  // remember current mode
+    sleep_us(10);                // allow MODE pins to settle
 }
 
-// Read terminal input without blocking.
-// Uses switch (as shown in lecture) to handle \r/\n, backspace, and normal chars.
+/* ============================================================
+ * Read terminal input without blocking
+ * ============================================================
+ * Uses getchar_timeout_us(0):
+ * - returns a character if one is waiting
+ * - returns PICO_ERROR_TIMEOUT if no input is available
+ *
+ * This function:
+ * - stores typed characters in command_buffer
+ * - handles Enter/newline
+ * - handles backspace
+ * - echoes valid characters back to terminal
+ *
+ * It does NOT parse commands or move the motor.
+ */
 void process_input(void)
 {
-    int ch = getchar_timeout_us(0);     // returns PICO_ERROR_TIMEOUT if nothing waiting
+    int ch = getchar_timeout_us(0);   // non-blocking read
 
+    /* Keep reading until no more characters are waiting */
     while (ch != PICO_ERROR_TIMEOUT)
     {
-        if (!flag_complete)             // ignore new input until current command is processed
+        /* Ignore new input if a full command is already waiting
+         * to be processed in main() */
+        if (!flag_complete)
         {
             switch (ch)
             {
-            // Enter pressed: null-terminate and mark command ready
-            case '\r': case '\n':
+            /* -------- Enter / newline --------
+             * End the command, add null terminator, set flag_complete.
+             * '\0' marks end of C string.
+             */
+            case '\r':
+            case '\n':
                 if (buffer_index > 0)
                 {
-                    command_buffer[buffer_index] = '\0'; // makes it a proper C string
+                    command_buffer[buffer_index] = '\0';
                     flag_complete = true;
-                    printf("\r\n");
+                    printf("\r\n");   // move to next line on terminal
                 }
                 break;
 
-            // Backspace: remove last character from buffer and terminal
-            case '\b': case 127:
+            /* -------- Backspace --------
+             * If there is at least one character in the buffer:
+             * - move back one index
+             * - erase character on terminal using "\b \b"
+             */
+            case '\b':
+            case 127:
                 if (buffer_index > 0)
                 {
-                    buffer_index--;         // one step back in buffer
-                    printf("\b \b");        // erase character on terminal
+                    buffer_index--;
+                    printf("\b \b");
                 }
                 break;
 
-            // Normal character: store if there is room (leave 1 byte for '\0')
+            /* -------- Normal character --------
+             * Only accept letters, digits, and spaces.
+             * Also keep 1 spare byte for '\0' terminator.
+             */
             default:
-                if (buffer_index < BUFFER_SIZE - 1)
+                if ((isalnum(ch) || ch == ' ') &&
+                    (buffer_index < BUFFER_SIZE - 1))
                 {
                     command_buffer[buffer_index] = (char)ch;
                     buffer_index++;
-                    putchar(ch);            // echo back so user sees what they typed
+                    putchar(ch);   // echo typed character
                 }
                 break;
             }
         }
 
-        ch = getchar_timeout_us(0);     // check for next available character
+        /* Check for another queued character */
+        ch = getchar_timeout_us(0);
     }
 }
 
-// Parse one null-terminated command and execute it.
-// Writes a result or error message to report.
-// Returns true on success, false on failure.
+/* ============================================================
+ * Parse one command and execute it
+ * ============================================================
+ * buffer          = command string to parse
+ * report          = output message buffer
+ * report_buf_size = size of report buffer
+ *
+ * Returns:
+ *   true  = command was valid and executed
+ *   false = invalid command or parameter error
+ *
+ * Important sscanf idea:
+ * - return value = how many items matched
+ * - trailing %c is used to catch extra junk
+ *
+ * Example:
+ *   "fwd 100"   -> matches steps only
+ *   "fwd 100 x" -> extra %c also matches, so invalid
+ */
 bool process_command(const char *buffer, char *report, int report_buf_size)
 {
-    int  steps, time_us, mode_value;
-    char type[8];   // "high" or "low" - 4 chars + '\0', %7s limits to 7 so 8 bytes is safe
-    char extra;     // catches any unexpected extra input after a command
-    int  n;         // sscanf return value - number of items matched
+    int steps, time_us, mode_value;
+    char type[8];   // enough for "high"/"low" plus '\0'
+    char extra;     // catches unexpected extra input
+    int n;          // sscanf return value
 
-    // ---- fwd <steps> ----
+    /* --------------------------------------------------------
+     * fwd <steps>
+     * -------------------------------------------------------- */
     n = sscanf(buffer, "fwd %d %c", &steps, &extra);
-    if (n == 1)     // exactly steps matched, nothing extra
-    {
-        if (steps < 0 || steps > 2000)
-        {
-            snprintf(report, report_buf_size,
-                     "steps parameter out of range: expected 0-2000, got %d", steps);
-            return false;
-        }
-        for (int i = 0; i < steps; i++) { step_motor(true); }
-        snprintf(report, report_buf_size, "fwd: moved by %d steps", steps);
-        return true;
-    }
-    if (n == 2) { snprintf(report, report_buf_size, "invalid command"); return false; }
 
-    // ---- back <steps> ----
-    n = sscanf(buffer, "back %d %c", &steps, &extra);
+    /* n == 1 means only the expected integer matched */
     if (n == 1)
     {
         if (steps < 0 || steps > 2000)
         {
             snprintf(report, report_buf_size,
-                     "steps parameter out of range: expected 0-2000, got %d", steps);
+                     "steps parameter out of range: expected 0-2000, got %d",
+                     steps);
             return false;
         }
-        for (int i = 0; i < steps; i++) { step_motor(false); }
-        snprintf(report, report_buf_size, "back: moved by %d steps", steps);
+
+        move_n_steps(steps, true);
+        snprintf(report, report_buf_size,
+                 "fwd: moved by %d steps", steps);
         return true;
     }
-    if (n == 2) { snprintf(report, report_buf_size, "invalid command"); return false; }
 
-    // ---- delay <high|low> <time_us> ----
-    n = sscanf(buffer, "delay %7s %d %c", type, &time_us, &extra);
-    if (n == 2)     // type and time matched, nothing extra
+    /* n == 2 means extra junk was present after valid parameter */
+    if (n == 2)
     {
+        snprintf(report, report_buf_size, "invalid command");
+        return false;
+    }
+
+    /* --------------------------------------------------------
+     * back <steps>
+     * -------------------------------------------------------- */
+    n = sscanf(buffer, "back %d %c", &steps, &extra);
+
+    if (n == 1)
+    {
+        if (steps < 0 || steps > 2000)
+        {
+            snprintf(report, report_buf_size,
+                     "steps parameter out of range: expected 0-2000, got %d",
+                     steps);
+            return false;
+        }
+
+        move_n_steps(steps, false);
+        snprintf(report, report_buf_size,
+                 "back: moved by %d steps", steps);
+        return true;
+    }
+
+    if (n == 2)
+    {
+        snprintf(report, report_buf_size, "invalid command");
+        return false;
+    }
+
+    /* --------------------------------------------------------
+     * delay <high|low> <time_us>
+     * -------------------------------------------------------- */
+    n = sscanf(buffer, "delay %7s %d %c", type, &time_us, &extra);
+
+    /* %7s prevents overflow into type[8] */
+    if (n == 2)
+    {
+        /* First validate type */
         if (strcmp(type, "high") != 0 && strcmp(type, "low") != 0)
         {
             snprintf(report, report_buf_size,
-                     "type parameter out of range: expected high or low, got %s", type);
+                     "type parameter out of range: expected high or low, got %s",
+                     type);
             return false;
         }
+
+        /* Then validate time range */
         if (time_us < 0 || time_us > 1000000)
         {
             snprintf(report, report_buf_size,
-                     "delay parameter out of range: expected 0-1000000, got %d", time_us);
+                     "delay parameter out of range: expected 0-1000000, got %d",
+                     time_us);
             return false;
         }
+
+        /* Apply new timing */
         if (strcmp(type, "high") == 0)
         {
             high_delay = time_us;
-            snprintf(report, report_buf_size, "high delay set to %d us", time_us);
+            snprintf(report, report_buf_size,
+                     "high delay set to %d us", time_us);
         }
         else
         {
             low_delay = time_us;
-            snprintf(report, report_buf_size, "low delay set to %d us", time_us);
+            snprintf(report, report_buf_size,
+                     "low delay set to %d us", time_us);
         }
+
         return true;
     }
-    if (n == 3) { snprintf(report, report_buf_size, "invalid command"); return false; }
 
-    // ---- mode <1|2|4|8|16|32> ----
+    /* n == 3 means extra junk after the expected arguments */
+    if (n == 3)
+    {
+        snprintf(report, report_buf_size, "invalid command");
+        return false;
+    }
+
+    /* --------------------------------------------------------
+     * mode <1|2|4|8|16|32>
+     * -------------------------------------------------------- */
     n = sscanf(buffer, "mode %d %c", &mode_value, &extra);
+
     if (n == 1)
     {
         if (!(mode_value == 1  || mode_value == 2  || mode_value == 4 ||
@@ -235,36 +407,56 @@ bool process_command(const char *buffer, char *report, int report_buf_size)
                      mode_value);
             return false;
         }
+
         set_microstepping(mode_value);
-        snprintf(report, report_buf_size, "microsteps set to %d", mode_value);
+        snprintf(report, report_buf_size,
+                 "microsteps set to %d", mode_value);
         return true;
     }
-    if (n == 2) { snprintf(report, report_buf_size, "invalid command"); return false; }
 
-    // No command matched
+    if (n == 2)
+    {
+        snprintf(report, report_buf_size, "invalid command");
+        return false;
+    }
+
+    /* If no pattern matched, command is invalid */
     snprintf(report, report_buf_size, "invalid command");
     return false;
 }
 
+/* ============================================================
+ * main
+ * ============================================================
+ * - Initialise stdio and GPIO
+ * - Repeatedly collect input
+ * - When Enter completes a command, parse and execute it
+ * - Print result
+ * - Reset buffer for next command
+ */
 int main(void)
 {
-    stdio_init_all();       // enable terminal I/O
-    init_pins();            // configure motor GPIO pins
+    char report_buf[100];   // stores success/error message from parser
 
-    char report_buf[100];   // receives success or error message from process_command
+    stdio_init_all();       // enable serial terminal I/O
+    init_pins();            // initialise stepper GPIO pins
 
     printf("Stepper Motor Control Initialized\r\n");
 
     while (true)
     {
-        process_input();    // collect typed characters (non-blocking)
+        process_input();    // collect characters without blocking
 
-        if (flag_complete)  // only parse once a full command has arrived
+        /* Only process once a complete command is ready */
+        if (flag_complete)
         {
-            process_command((const char *)command_buffer, report_buf, sizeof(report_buf));
+            process_command(command_buffer,
+                            report_buf,
+                            (int)sizeof(report_buf));
+
             printf("%s\r\n", report_buf);
 
-            // Reset for next command
+            /* Reset command buffer state for next command */
             buffer_index = 0;
             command_buffer[0] = '\0';
             flag_complete = false;
@@ -272,14 +464,17 @@ int main(void)
     }
 }
 
-/* ---- Things to remember ----
- * buffer_index        = next empty slot (not last filled)
- * flag_complete       = Enter was pressed; command is ready to parse
- * '\0'                = null terminator; turns char array into a C string
- * getchar_timeout_us(0) = non-blocking read; returns PICO_ERROR_TIMEOUT if empty
- * sscanf return value = number of items successfully matched
- * %c at end of sscanf format = catches any extra junk after expected args
- * %7s in sscanf      = width limit; buffer must be 8 bytes (7 + '\0')
- * switch on ch       = lecture-pattern for handling \r/\n, backspace, default
- * snprintf           = safe printf into a buffer (won't overflow)
+/* ============================================================
+ * Quick memory helpers
+ * ============================================================
+ * '\0'                  = end of C string
+ * buffer_index          = next empty slot in command_buffer
+ * flag_complete         = Enter pressed; command ready to parse
+ * getchar_timeout_us(0) = non-blocking input
+ * sscanf return value   = number of successfully matched items
+ * trailing %c           = catches extra junk after valid args
+ * %7s                   = safe width limit for type[8]
+ * snprintf              = safe print into buffer
+ * "\b \b"               = erase one character on terminal
+ * "\r\n"                = Windows-style newline for terminal
  */
