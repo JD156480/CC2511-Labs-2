@@ -1,6 +1,6 @@
 /**************************************************************
  * main.c
- * rev 1.2 06-Apr-2026
+ * rev 1.3 13-Apr-2026
  * DevBoardLab – Week 7/8 Lab, Parts 1–6
  *
  * Event-driven terminal UI for the CC2511 Dev Board.
@@ -11,7 +11,6 @@
  *
  * Parts 1–5 implement the required lab behaviour.
  * Part 6 adds optional terminal panels and help text.
- * Remember: replace all -> ctrl + H
  **************************************************************/
 
 #include <stdio.h>
@@ -59,7 +58,7 @@
 #define OUTER_LEFT    1
 #define OUTER_TOP     1
 #define OUTER_WIDTH   60
-#define OUTER_HEIGHT  17
+#define OUTER_HEIGHT  18
 
 #define RGB_LEFT      2
 #define RGB_TOP       4
@@ -84,6 +83,8 @@
 /* -- Fixed element positions ------------------------------- */
 #define COMMAND_COL     3
 #define COMMAND_ROW     2
+#define STATUS_COL      3
+#define STATUS_ROW      3
 
 #define RGB_LABEL_COL   4
 #define RGB_VALUE_COL   12
@@ -107,9 +108,7 @@
 #define INPUT_ROW       15
 #define INPUT_COL       38
 
-/* Width of typed-text area, derived from panel geometry so it
- * stays correct if panels are resized.
- * HELP_LEFT + HELP_WIDTH - 2 (borders) - INPUT_COL = 16     */
+/* Width of typed-text area, derived from panel geometry */
 #define INPUT_WIDTH  (HELP_LEFT + HELP_WIDTH - 2 - INPUT_COL)
 
 /* -- Shared state: volatile because modified by ISR/callbacks */
@@ -132,6 +131,7 @@ uint16_t temp_adc_value  = 0;
 
 /* -- Forward declarations ----------------------------------- */
 void display_command(const char *command);
+void display_status(const char *message);
 void on_uart_rx(void);
 void init_uart(void);
 void display_cursor(void);
@@ -165,14 +165,15 @@ static void draw_multiline_text(int left, int top, const char *text);
 /* ============================= */
 
 /* UART RX ISR.
- * Rule (ES24 lecture): keep short, collect data only, never parse. */
+ * Keep this short: collect input only, do not parse here.
+ */
 void on_uart_rx(void)
 {
     while (uart_is_readable(UART_ID))
     {
         uint8_t ch = uart_getc(UART_ID);
 
-        /* If main() hasn't consumed the last command yet, discard */
+        /* If main() has not consumed the previous command yet, discard */
         if (uart_command_received)
         {
             continue;
@@ -180,44 +181,44 @@ void on_uart_rx(void)
 
         switch (ch)
         {
-            /* Enter: terminate buffer and signal main loop */
+            /* Enter: terminate string and signal main loop */
             case '\r':
             case '\n':
                 uart_command_buffer[uart_command_index] = '\0';
                 uart_command_received = true;
-                uart_command_index    = 0;
+                uart_command_index = 0;
                 break;
 
-            /* Backspace / DEL: remove one char from buffer */
+            /* Backspace / DEL: remove one character */
             case '\b':
             case 127:
                 if (uart_command_index > 0)
                 {
                     uart_command_index--;
                     uart_command_buffer[uart_command_index] = '\0';
-                    /* Move back, blank, move back = visual erase */
+
+                    /* visual erase: back, blank, back */
                     uart_putc(UART_ID, '\b');
                     uart_putc(UART_ID, ' ');
                     uart_putc(UART_ID, '\b');
                 }
                 break;
 
-            /* Alphanumeric / space: buffer and echo */
+            /* Accept letters, digits and spaces only */
             default:
                 if ((isalnum((unsigned char)ch) || ch == ' ') &&
                     uart_command_index < UART_BUF_LEN - 1)
                 {
                     uart_command_buffer[uart_command_index++] = ch;
-                    uart_command_buffer[uart_command_index]   = '\0';
+                    uart_command_buffer[uart_command_index] = '\0';
                     uart_putc(UART_ID, ch);   /* local echo */
                 }
-                /* All other chars: silently ignore */
                 break;
         }
     }
 }
 
-/* Set up UART0 and attach on_uart_rx as the RX ISR. */
+/* Set up UART0 and attach RX ISR */
 void init_uart(void)
 {
     uart_init(UART_ID, BAUD_RATE);
@@ -233,8 +234,7 @@ void init_uart(void)
 /* Part 2 – Terminal management                              */
 /* ============================= */
 
-/* Move cursor to end of current input, clamped to panel width.
- * Must be called after every screen update so user can keep typing. */
+/* Move cursor to end of current typed input */
 void display_cursor(void)
 {
     int idx = uart_command_index < INPUT_WIDTH
@@ -242,7 +242,11 @@ void display_cursor(void)
     term_move_to(INPUT_COL + idx, INPUT_ROW);
 }
 
-/* Blank only the typed-text area; leaves the "Next command:" label. */
+/* Clear only the input area 
+- move to row
+- blank out old text
+- move back
+- print new text*/
 void clear_input(void)
 {
     term_move_to(INPUT_COL, INPUT_ROW);
@@ -252,20 +256,42 @@ void clear_input(void)
     }
 }
 
+/* Show most recently received command */
 void display_command(const char *command)
 {
+    /* Clear only the command area inside the outer box 
+    and again - could use helper, but eh. 
+    quicker to recognise for exam.*/
     term_move_to(COMMAND_COL, COMMAND_ROW);
-    term_erase_line();
+    for (int i = 0; i < OUTER_WIDTH - COMMAND_COL - 1; i++)
+    {
+        printf(" ");
+    }
+
     term_move_to(COMMAND_COL, COMMAND_ROW);
     printf("Got [%s]", command);
 }
 
-/* Draw all fixed/static screen elements.
- * term_set_color must be called before term_cls (fills background). */
+/* Show short status / feedback message */
+void display_status(const char *message)
+{
+    /* Clear only the status area inside the outer box */
+    term_move_to(STATUS_COL, STATUS_ROW);
+    for (int i = 0; i < OUTER_WIDTH - STATUS_COL - 1; i++)
+    {
+        printf(" ");
+    }
+
+    term_move_to(STATUS_COL, STATUS_ROW);
+    printf("%s", message);
+}
+
+/* Draw all fixed/static screen elements */
 void display_background(void)
 {
     term_set_color(clrWhite, clrBlack);
     term_cls();
+    term_move_to(1, 1);
 
     /* Part 6 panels */
     draw_box(OUTER_LEFT, OUTER_TOP, OUTER_WIDTH, OUTER_HEIGHT,
@@ -275,8 +301,8 @@ void display_background(void)
     draw_box(ADC_LEFT,  ADC_TOP,  ADC_WIDTH,  ADC_HEIGHT,  "ADC Readings", clrGreen);
     draw_box(HELP_LEFT, HELP_TOP, HELP_WIDTH, HELP_HEIGHT, "Input / Help", clrBlue);
 
-    term_move_to(COMMAND_COL, COMMAND_ROW);
-    printf("Got []");
+    display_command("");
+    display_status("");
 
     display_rgb_labels();
     display_rgb_values(red, green, blue);
@@ -285,7 +311,6 @@ void display_background(void)
     display_push_values(push_states);
 
     display_adc_labels();
-    /* Show initial globals (0); ADC will update within 100 ms */
     term_move_to(ADC_VALUE_COL, LIGHT_ROW); printf("%4u", light_adc_value);
     term_move_to(ADC_VALUE_COL, TEMP_ROW);  printf("%4u", temp_adc_value);
 
@@ -306,7 +331,7 @@ void display_background(void)
 /* Part 3 – RGB LED and command processor                    */
 /* ============================= */
 
-/* Initialise PWM for all three LED pins. */
+/* Initialise PWM for all three LED pins */
 void init_rgb_led(void)
 {
     uint slice;
@@ -323,8 +348,7 @@ void init_rgb_led(void)
     set_rgb_led(0, 0, 0);
 }
 
-/* Set brightness using squares of 0..255 for perceptual linearity.
- * 255^2 = 65025, giving near-full brightness at max input. */
+/* Set brightness using squared 0..255 values */
 void set_rgb_led(uint8_t r, uint8_t g, uint8_t b)
 {
     pwm_set_gpio_level(RED_PIN,   (uint16_t)r * r);
@@ -339,7 +363,7 @@ void display_rgb_labels(void)
     term_move_to(RGB_LABEL_COL, BLUE_ROW);  printf("Blue :");
 }
 
-/* %3u ensures a 3-digit field, so "  5" fully overwrites "255". */
+/* %3u overwrites old values cleanly */
 void display_rgb_values(uint8_t r, uint8_t g, uint8_t b)
 {
     term_move_to(RGB_VALUE_COL, RED_ROW);   printf("%3u", r);
@@ -347,14 +371,14 @@ void display_rgb_values(uint8_t r, uint8_t g, uint8_t b)
     term_move_to(RGB_VALUE_COL, BLUE_ROW);  printf("%3u", b);
 }
 
-/* Parse and execute one command. Updates globals; caller handles hardware.
+/* Parse one command and update RGB globals
  * Case-insensitive: Red / RED / red all work.
- * Returns true if command was valid. */
+ */
 bool process_command(const char *command)
 {
     char lower[UART_BUF_LEN];
-    int  value = 0;
-    int  i;
+    int value = 0;
+    int i;
 
     for (i = 0; i < UART_BUF_LEN - 1 && command[i] != '\0'; i++)
     {
@@ -386,55 +410,54 @@ bool process_command(const char *command)
         return true;
     }
 
-    return false;   /* unrecognised command */
+    return false;
 }
 
 /* ============================= */
 /* Part 4 – Pushbutton interrupt handler                     */
 /* ============================= */
 
-/* Initialise all three pushbutton pins.
- * gpio_pull_up() is required: buttons are active-low on the board
- * (idle = pin high = UP; pressed = pin low = DOWN).
- * gpio_set_irq_enabled_with_callback sets the bank-wide callback;
- * calling it once is enough — subsequent pins use gpio_set_irq_enabled. */
+/* Initialise all pushbutton pins and then enable interrupts.
+ * Buttons are active-low:
+ *   high = UP
+ *   low  = DOWN
+ */
 void init_push_buttons(void)
 {
+    /* First configure all pins properly */
+    for (int i = 0; i < PUSH_PIN_COUNT; i++)
+    {
+        gpio_init(push_pins[i]);
+        gpio_set_dir(push_pins[i], GPIO_IN);
+        gpio_pull_up(push_pins[i]);
+        push_states[i] = gpio_get(push_pins[i]);   /* capture initial state */
+    }
+
+    /* Then attach callback and enable interrupts */
     gpio_set_irq_enabled_with_callback(
         push_pins[0],
         GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE,
         true,
         &on_gpio_change);
 
-    for (int i = 0; i < PUSH_PIN_COUNT; i++)
+    for (int i = 1; i < PUSH_PIN_COUNT; i++)
     {
-        gpio_init(push_pins[i]);
-        gpio_set_dir(push_pins[i], GPIO_IN);
-        gpio_pull_up(push_pins[i]);
-
-        if (i > 0)
-        {
-            gpio_set_irq_enabled(push_pins[i],
-                                 GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE,
-                                 true);
-        }
-
-        push_states[i] = gpio_get(push_pins[i]);   /* capture initial state */
+        gpio_set_irq_enabled(push_pins[i],
+                             GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE,
+                             true);
     }
 
     push_state_changed = true;
 }
 
-/* Shared callback for all three buttons.
- * Falling edge = pin goes low = button pressed = DOWN.
- * Rising edge  = pin goes high = button released = UP. */
+/* Shared callback for all three buttons */
 void on_gpio_change(uint gpio, uint32_t events)
 {
     for (int i = 0; i < PUSH_PIN_COUNT; i++)
     {
         if (gpio == (uint)push_pins[i])
         {
-            push_states[i]     = (events & GPIO_IRQ_EDGE_RISE) ? true : false;
+            push_states[i] = (events & GPIO_IRQ_EDGE_RISE) ? true : false;
             push_state_changed = true;
             break;
         }
@@ -448,7 +471,7 @@ void display_push_labels(void)
     term_move_to(PUSH_LABEL_COL, PUSH_ROW_TOP + 2); printf("Push3:");
 }
 
-/* %-5s: left-justify in 5 chars so "UP   " fully overwrites "DOWN " */
+/* %-5s ensures old text is fully overwritten */
 void display_push_values(const volatile bool *states)
 {
     for (int i = 0; i < PUSH_PIN_COUNT; i++)
@@ -467,15 +490,15 @@ void init_timer(void)
     add_repeating_timer_ms(TIMER_INTERVAL_MS, on_timer, NULL, &timer);
 }
 
-/* Timer callback: set flag only. Never do significant work here. */
+/* Timer callback: set flag only */
 bool on_timer(struct repeating_timer *t)
 {
-    (void)t;              /* suppress unused-parameter warning */
+    (void)t;
     timer_ticked = true;
-    return true;          /* must return true to keep repeating */
+    return true;   /* keep repeating */
 }
 
-/* ADC0 = LDR on GPIO26; ADC4 = internal temperature sensor. */
+/* ADC0 = LDR, ADC4 = internal temperature */
 void init_adc(void)
 {
     adc_init();
@@ -483,20 +506,27 @@ void init_adc(void)
     adc_set_temp_sensor_enabled(true);
 }
 
-/* Read both ADC channels into globals.
- * Returns true if either value changed since last call. */
+/* Read both ADC channels into globals */
 bool read_adc_values(void)
 {
-    bool     changed = false;
+    bool changed = false;
     uint16_t val;
 
     adc_select_input(LDR_ADC_CHANNEL);
     val = adc_read();
-    if (val != light_adc_value) { light_adc_value = val; changed = true; }
+    if (val != light_adc_value)
+    {
+        light_adc_value = val;
+        changed = true;
+    }
 
     adc_select_input(TEMP_ADC_CHANNEL);
     val = adc_read();
-    if (val != temp_adc_value)  { temp_adc_value  = val; changed = true; }
+    if (val != temp_adc_value)
+    {
+        temp_adc_value = val;
+        changed = true;
+    }
 
     return changed;
 }
@@ -507,7 +537,7 @@ void display_adc_labels(void)
     term_move_to(ADC_LABEL_COL, TEMP_ROW);  printf("Temp :");
 }
 
-/* Read ADC; update display only if a value changed. */
+/* Update ADC display only if value changed */
 void display_adc_values(void)
 {
     if (read_adc_values())
@@ -521,19 +551,20 @@ void display_adc_values(void)
 /* Part 6 – Terminal panel utilities (extension)             */
 /* ============================= */
 
-/* Draw a thin coloured border with an optional centred title. */
+/* Draw coloured panel border with optional title */
 static void draw_box(int left, int top, int width, int height,
                      const char *title, unsigned short background)
 {
-    /* Top and bottom edges */
     term_set_color(clrWhite, background);
+
+    /* Top and bottom edges */
     for (int pass = 0; pass < 2; pass++)
     {
         term_move_to(left, pass == 0 ? top : top + height - 1);
         for (int c = 0; c < width; c++) printf(" ");
     }
 
-    /* Left/right edges + clear interior to black */
+    /* Left/right edges + black interior */
     for (int row = 1; row < height - 1; row++)
     {
         term_set_color(clrWhite, background);
@@ -545,7 +576,7 @@ static void draw_box(int left, int top, int width, int height,
         for (int c = 1; c < width - 1; c++) printf(" ");
     }
 
-    /* Centred title on top edge */
+    /* Centred title */
     if (title != NULL && title[0] != '\0')
     {
         int tlen = (int)strlen(title);
@@ -554,12 +585,13 @@ static void draw_box(int left, int top, int width, int height,
             term_set_color(clrWhite, background);
             term_move_to(left + (width - tlen) / 2, top);
             printf("%s", title);
-            term_set_color(clrWhite, clrBlack);
         }
     }
+
+    term_set_color(clrWhite, clrBlack);
 }
 
-/* Print text at (left, top), advancing one row on each '\n'. */
+/* Print multiline text starting at left, top */
 static void draw_multiline_text(int left, int top, const char *text)
 {
     int x = left;
@@ -596,7 +628,7 @@ int main(void)
     init_adc();
     init_timer();
 
-    display_background();   /* ADC shows 0,0 initially; updates in 100 ms */
+    display_background();
 
     while (true)
     {
@@ -609,7 +641,13 @@ int main(void)
             {
                 set_rgb_led(red, green, blue);
                 display_rgb_values(red, green, blue);
+                display_status("OK");
             }
+            else
+            {
+                display_status("Invalid command");
+            }
+
             clear_input();
             display_cursor();
             uart_command_received = false;   /* release buffer to ISR */
@@ -631,8 +669,7 @@ int main(void)
             timer_ticked = false;
         }
 
-        /* Sleep until next interrupt (UART byte, GPIO edge, timer).
-         * Avoids busy-polling and saves power (ES25 lecture). */
+        /* Sleep until next interrupt (UART, GPIO, timer) */
         __asm volatile("wfi");
     }
 }
