@@ -18,11 +18,16 @@ add_executable(${projname}
         command.c
         parser.c
         mmhal.c
+        ui.c
         )
 
-        pico_enable_stdio_usb(${projname} 1)
-        pico_enable_stdio_uart(${projname} 0)
+       pico_enable_stdio_usb(${projname} 0)
+       pico_enable_stdio_uart(${projname} 1)
 
-target_link_libraries(${projname} pico_stdlib hardware_pwm)
+target_link_libraries(${projname}
+        pico_stdlib
+        hardware_pwm
+        m
+)
 pico_add_extra_outputs(${projname})
 

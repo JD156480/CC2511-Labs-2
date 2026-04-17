@@ -15,8 +15,8 @@
 #define X_MAX_MM 200
 #define Y_MIN_MM 0
 #define Y_MAX_MM 200
-#define Z_MIN_MM 0
-#define Z_MAX_MM 100
+#define Z_MIN_MM -100
+#define Z_MAX_MM 200
 
 /* Travel limits converted to steps */
 #define X_MIN (X_MIN_MM * X_STEPS_PER_MM)

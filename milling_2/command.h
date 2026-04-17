@@ -1,6 +1,6 @@
-#ifndef __GCODE_H__
-#define __GCODE_H__
+#ifndef __COMMAND_H__
+#define __COMMAND_H__
 
 void handle_command_mode(void);
 
-#endif // __GCODE_H__
+#endif // __COMMAND_H__

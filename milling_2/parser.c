@@ -1,19 +1,14 @@
 /**************************************************************
  * parser.c
  * Convert one text command string into a parsed_command_t.
- *
- * Responsibilities:
- * - identify command type (G0, G1, G28, M3, etc.)
- * - extract optional parameters (X, Y, Z, F, I, J, P, S)
- * - store them in a structured output
  **************************************************************/
 
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "parser.h"
 
-/* Reset parsed command to a clean default state */
 static void init_parsed_command(parsed_command_t *cmd)
 {
     cmd->type = CMD_INVALID;
@@ -37,7 +32,6 @@ static void init_parsed_command(parsed_command_t *cmd)
     cmd->s = 0.0f;
 }
 
-/* Copy input into uppercase buffer so parsing is case-insensitive */
 static void make_uppercase_copy(const char *src, char *dst, int size)
 {
     int i;
@@ -50,60 +44,80 @@ static void make_uppercase_copy(const char *src, char *dst, int size)
     dst[i] = '\0';
 }
 
-/* Identify the main command word at the start of the line */
+/* Get first token only, e.g. "G1" from "G1 X10 Y20" */
+static void extract_first_token(const char *src, char *token, int size)
+{
+    int i = 0;
+
+    while (*src != '\0' && isspace((unsigned char)*src))
+    {
+        src++;
+    }
+
+    while (*src != '\0' &&
+           !isspace((unsigned char)*src) &&
+           i < size - 1)
+    {
+        token[i++] = *src++;
+    }
+
+    token[i] = '\0';
+}
+
 static command_type_t parse_command_type(const char *buffer)
 {
-    if (strcmp(buffer, "H") == 0 || strcmp(buffer, "HELP") == 0)
+    char token[16];
+
+    extract_first_token(buffer, token, sizeof(token));
+
+    if (strcmp(token, "H") == 0 || strcmp(token, "HELP") == 0)
         return CMD_HELP;
 
-    if (strncmp(buffer, "G28.1", 5) == 0)
+    if (strcmp(token, "G28.1") == 0)
         return CMD_G281;
 
-    if (strncmp(buffer, "G28", 3) == 0)
+    if (strcmp(token, "G28") == 0)
         return CMD_G28;
 
-    if (strncmp(buffer, "G00", 3) == 0 || strncmp(buffer, "G0", 2) == 0)
+    if (strcmp(token, "G0") == 0 || strcmp(token, "G00") == 0)
         return CMD_G0;
 
-    if (strncmp(buffer, "G01", 3) == 0 || strncmp(buffer, "G1", 2) == 0)
+    if (strcmp(token, "G1") == 0 || strcmp(token, "G01") == 0)
         return CMD_G1;
 
-    if (strncmp(buffer, "G02", 3) == 0 || strncmp(buffer, "G2", 2) == 0)
+    if (strcmp(token, "G2") == 0 || strcmp(token, "G02") == 0)
         return CMD_G2;
 
-    if (strncmp(buffer, "G03", 3) == 0 || strncmp(buffer, "G3", 2) == 0)
+    if (strcmp(token, "G3") == 0 || strcmp(token, "G03") == 0)
         return CMD_G3;
 
-    if (strncmp(buffer, "G04", 3) == 0 || strncmp(buffer, "G4", 2) == 0)
+    if (strcmp(token, "G4") == 0 || strcmp(token, "G04") == 0)
         return CMD_G4;
 
-    if (strcmp(buffer, "G20") == 0)
+    if (strcmp(token, "G20") == 0)
         return CMD_G20;
 
-    if (strcmp(buffer, "G21") == 0)
+    if (strcmp(token, "G21") == 0)
         return CMD_G21;
 
-    if (strcmp(buffer, "G90") == 0)
+    if (strcmp(token, "G90") == 0)
         return CMD_G90;
 
-    if (strcmp(buffer, "G91") == 0)
+    if (strcmp(token, "G91") == 0)
         return CMD_G91;
 
-    if (strcmp(buffer, "M2") == 0 || strcmp(buffer, "M02") == 0)
+    if (strcmp(token, "M2") == 0 || strcmp(token, "M02") == 0)
         return CMD_M2;
 
-    if (strncmp(buffer, "M3", 2) == 0)
+    if (strcmp(token, "M3") == 0)
         return CMD_M3;
 
-    if (strcmp(buffer, "M5") == 0)
+    if (strcmp(token, "M5") == 0)
         return CMD_M5;
 
     return CMD_INVALID;
 }
 
-/* Extract a numeric parameter after a given letter.
- * Example: find_value("G1 X10 Y20", 'X', &out) -> out = 10
- */
 static bool extract_value(const char *buffer, char key, float *out)
 {
     const char *ptr = strchr(buffer, key);
@@ -131,7 +145,6 @@ bool parse_command(const char *buffer, parsed_command_t *out)
         return false;
     }
 
-    /* Extract optional parameters if present */
     out->has_x = extract_value(upper, 'X', &out->x);
     out->has_y = extract_value(upper, 'Y', &out->y);
     out->has_z = extract_value(upper, 'Z', &out->z);
