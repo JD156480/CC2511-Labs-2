@@ -1,6 +1,6 @@
-# milling_basic
+# milling_2
 
-`milling_basic` is a Raspberry Pi Pico firmware project for the CC2511 2026 milling-machine board. 
+`milling_2` is a Raspberry Pi Pico firmware project for the CC2511 2026 milling-machine board. 
 
 The project includes a header file `mmhal.h`, which declares a hardware access layer (HAL) which
 should be used in the project.
@@ -24,5 +24,5 @@ Expected build inputs:
 
 - A working Pico SDK setup available to CMake.
 
-The build target is named `milling_basic`.
+The build target is named `milling_2`.
 
