@@ -11,24 +11,25 @@
  *
  * Parts 1–5 implement the required lab behaviour.
  * Part 6 adds optional terminal panels and help text.
+ * create new prog: python "%pico_repos_path%\ppgen\ppgen.py" programnamehere -l pwm adc uart -d picoprobe2
  **************************************************************/
 
-#include <stdio.h>
-#include <stdbool.h>    /* bool, true, false                  */
-#include <stdint.h>     /* uint8_t, uint16_t etc.             */
-#include <string.h>     /* strcmp, strlen                     */
-#include <ctype.h>      /* isalnum, tolower                   */
+#include <stdio.h>      // printf()
+#include <stdbool.h>    // bool, true, false
+#include <stdint.h>     // fixed-width types like uint8_t, uint16_t
+#include <string.h>     // string functions like strcmp(), strlen()
+#include <ctype.h>      // character checks like isalnum(), tolower()
 
-#include "pico/stdlib.h"
-#include "pico/time.h"
+#include "pico/stdlib.h"    // basic Pico SDK functions: stdio, sleep, GPIO basics
+#include "pico/time.h"      // time functions: get_absolute_time(), time differences
 
-#include "hardware/uart.h"
-#include "hardware/irq.h"
-#include "hardware/gpio.h"
-#include "hardware/pwm.h"
-#include "hardware/adc.h"
+#include "hardware/uart.h"  // low-level UART functions and settings
+#include "hardware/irq.h"   // interrupt setup and handlers
+#include "hardware/gpio.h"  // GPIO control: input/output pins, reads, writes
+#include "hardware/pwm.h"   // PWM control for LED brightness etc.
+#include "hardware/adc.h"   // ADC functions for reading analog values
 
-#include "terminal.h"
+#include "terminal.h"       // terminal cursor movement, colours, screen layout
 
 /* -- UART config ------------------------------------------- */
 #define UART_ID      uart0
